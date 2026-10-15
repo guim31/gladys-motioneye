@@ -1,0 +1,54 @@
+{
+  "source": "motioneye_client.utils.compute_signature (motioneye-client 0.3.x, a copy of motionEye utils.compute_signature)",
+  "vectors": [
+    {
+      "method": "GET",
+      "path": "/config/list?_username=admin",
+      "body": null,
+      "key": "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+      "signature": "2339bc5921ed98c8930cbc00d8c8fba842a1e2fe"
+    },
+    {
+      "method": "GET",
+      "path": "/config/list?_username=admin",
+      "body": null,
+      "key": "25ab86bed149ca6ca9c1c0d5db7c9a91388ddeab",
+      "signature": "4c7c2b2766b8948b3c4eab14c1e82e625a2e5833"
+    },
+    {
+      "method": "GET",
+      "path": "/picture/1/current/?_username=user&width=640",
+      "body": null,
+      "key": "4ebac4d1c4c888e56ce4dd93f67d801a73848d35",
+      "signature": "3b73f17c08ac334bcac97a0f4038f143f78383d6"
+    },
+    {
+      "method": "POST",
+      "path": "/config/2/set?_username=admin",
+      "body": "{\"name\": \"Entr\\u00e9e garage\", \"motion_detection\": true, \"id\": 2}",
+      "key": "25ab86bed149ca6ca9c1c0d5db7c9a91388ddeab",
+      "signature": "2d7bae32dbcf23b85814bf1b416003b5be012f58"
+    },
+    {
+      "method": "POST",
+      "path": "/action/1/snapshot?_username=admin",
+      "body": "{}",
+      "key": "11f6ad8ec52a2984abaafd7c3b516503785c2072",
+      "signature": "1b915be4fad489ed6cad48c1473645b2c765d913"
+    },
+    {
+      "method": "GET",
+      "path": "/movie/1/list?prefix=2026-10-15&_username=admin&b=a+b%2Bc",
+      "body": null,
+      "key": "516b9783fca517eecbd1d064da2d165310b19759",
+      "signature": "7fe51b1231a782beab865b17cc0cb84a96f9259c"
+    },
+    {
+      "method": "POST",
+      "path": "/config/3/set?_username=admin",
+      "body": "{\"name\":\"Entrée 😀 [garage]\",\"motion_detection\":false}",
+      "key": "25ab86bed149ca6ca9c1c0d5db7c9a91388ddeab",
+      "signature": "03f8738606a82a0e102e31dc3ccc9022e6967e04"
+    }
+  ]
+}

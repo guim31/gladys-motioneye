@@ -1,41 +1,54 @@
 // -----------------------------------------------------------------------------
-// Scene actions (SDK v0.14+, Gladys 5.1+).
+// Scene actions (manifest `scene_actions`, Gladys 5.1+).
 //
-// A scene action is an OPERATION a scene author places in a scene, with
-// parameters and a result: "identify this device", "take a snapshot", "clean
-// these rooms". Each one is declared in the manifest `scene_actions` field
-// (key, label, `fields` in the config_schema grammar, scalar `outputs`) and
-// handled here, keyed by that same `key`; index.js registers every entry with
-// `gladys.onSceneAction(key, ...)`.
-//
-// Scene TRIGGERS are the other direction ("this happened"): they are fired by
-// the device that observes the event, see src/devices/motionSensor.js.
-//
-// The rules that matter:
-//   - `fields` arrive RESOLVED: scene variables substituted, defaults applied,
-//     validated by the core; a `"source": "devices"` field is the chosen
-//     device external_id;
-//   - resolve an object of the declared `outputs` (scalars only), readable by
-//     the following actions of the scene, or `undefined` for none. Keys not
-//     declared in the manifest are dropped by the core;
-//   - throwing fails THIS action only: the scene logs it and continues. A
-//     scene action is never a condition: return an output and let the scene
-//     author gate on it;
-//   - never fire a scene event as a consequence of a received action: a scene
-//     bound to that event would loop through the integration.
+// Gladys can already set one switch from a scene ("Control a device"); what
+// these actions add: motion detection of EVERY camera at once (one request,
+// motion restarts once: the "alarm armed" scene), a picture saved by motionEye
+// with a fresh image in Gladys for the core's "Send a camera image", and the
+// state of a camera as values the next actions can test.
 // -----------------------------------------------------------------------------
 
-import { createLogger } from '@gladysassistant/integration-sdk';
-import { signalDevice } from './devices/index.js';
+export const STATES = { on: true, off: false };
 
-const logger = createLogger({ name: 'scenes' });
+function cameraOf(hub, fields) {
+  if (!fields?.camera) {
+    throw new Error('Choose a camera');
+  }
+  return hub.require(fields.camera);
+}
+
+async function setMotionDetection(hub, { fields }) {
+  const on = STATES[fields?.state];
+  if (on === undefined) {
+    throw new Error(`Unknown state "${fields?.state}": on or off`);
+  }
+  const cameras = fields?.camera ? [hub.require(fields.camera)] : [...hub.cameras.values()];
+  if (cameras.length === 0) {
+    throw new Error('No motionEye camera known');
+  }
+  await hub.setSwitches(cameras, 'motion_detection', on);
+  return { cameras: cameras.length };
+}
+
+async function takeSnapshot(hub, { fields }) {
+  await hub.snapshot(cameraOf(hub, fields));
+}
+
+async function getStatus(hub, { fields }) {
+  const camera = cameraOf(hub, fields);
+  // A fresh read: the action is often the first step of a scene.
+  await hub.poll(camera);
+  return {
+    online: camera.online === true,
+    motion: camera.motion === true,
+    motion_detection: camera.settings.motion_detection === true,
+    still_images: camera.settings.still_images === true,
+    movies: camera.settings.movies === true,
+  };
+}
 
 export const SCENE_ACTIONS = {
-  // The ack is awaited under the action's `timeout_seconds` (15 s in the
-  // manifest), counted from the moment the scene reaches the action.
-  async identify_device(gladys, { fields, config }) {
-    logger.info(`Scene action identify_device <- ${fields.device}`);
-    const signalled = await signalDevice(gladys, fields.device, config);
-    return { signalled };
-  },
+  set_motion_detection: setMotionDetection,
+  take_snapshot: takeSnapshot,
+  get_status: getStatus,
 };
