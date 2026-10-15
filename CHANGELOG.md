@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-15
+
 ### Added
 
 - motionEye servers (0.42 and later, signed requests or the session login of
@@ -26,3 +28,6 @@ the notes of the version's GitHub Release.
   camera"; dashboard widget "motionEye camera"; action "Check the
   connection".
 - Texts and documentation in English, French, German and Spanish.
+
+[Unreleased]: https://github.com/guim31/gladys-motioneye/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/guim31/gladys-motioneye/releases/tag/v1.0.0
