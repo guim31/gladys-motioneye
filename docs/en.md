@@ -1,61 +1,118 @@
-# Demo Devices Template
+# motionEye
 
-This is the user documentation of the integration. Gladys re-hosts this file
-and shows a permanent **Documentation** link to it in the Configuration screen
-(in the user's language, with English as the fallback) — it is when
-configuring that the user needs it most. Keep the short onboarding hints in
-the `section` blocks of the manifest `config_schema`; put the long
-step-by-step (screenshots, troubleshooting…) here.
+Brings the cameras of a [motionEye](https://github.com/motioneye-project/motioneye) server
+(motionEye on a Raspberry Pi, a NAS or in Docker, motionEyeOS) into Gladys: their image, the motion
+they see right now, and the motionEye switches for motion detection, still images and movie
+recording. Motion fires a scene trigger with a fresh image, so a scene can send it to you.
 
-## What you get
+Tested against real motionEye servers in Docker (0.42 and 0.45 in development) with a simulated
+network camera, not yet on a Raspberry Pi running motionEyeOS: feedback welcome on
+[GitHub](https://github.com/guim31/gladys-motioneye/issues) or on the Gladys forum.
 
-Six demo devices show up after installation: a weather station (real data
-from Open-Meteo), a switch, a dimmable light, a smart plug with power
-metering, a motion sensor and a camera.
+## What you need
 
-## Configuration
+- Gladys 5.1 or later.
+- A motionEye server reachable from Gladys on the local network, version 0.42 or later. Its web
+  page is usually at `http://<address>:8765`.
+- The **administrator** account of motionEye (user `admin` by default, the one that opens the
+  settings). The surveillance user only sees the images: it cannot change a switch.
+- One motionEye server per integration. Cameras of other motionEye servers can be added to that one
+  as "Remote motionEye camera", and then come into Gladys with it.
 
-1. Open the **Configuration** tab of the integration.
-2. Set the **latitude** and **longitude** the demo weather station should
-   observe (they default to Paris), and pick your temperature unit.
-   The **refresh interval** sets how often the weather station and the
-   plug's power are read: every 5 minutes by default, every minute at most.
-3. Save: the devices appear in the **Discovery** tab, ready to be added.
+## Set up
 
-The **Prefer the local connection** toggle drives the demo plug: it reports
-the channel it actually uses as a badge (local or cloud), with an orange dot
-when it runs degraded (local refused, cloud fallback).
+1. In Gladys, open **Integrations**, find **motionEye** and install it.
+2. In its **Configuration** tab, fill in:
+   - **motionEye address**: the address of the motionEye page, e.g. `192.168.1.20:8765`. Port 8765
+     is used when none is given; write `https://` or a path (`http://nas.lan:80/motioneye`) for a
+     reverse proxy.
+   - **Administrator user name** (`admin` by default) and **Password**.
+   - **Motion check**: how often each camera added in Gladys is read (2, 5, 10 or 30 seconds, 5
+     by default). It is the delay before motion is seen.
+   - **Image refresh**: how often each image is sent to Gladys (10 seconds to 15 minutes, 1
+     minute by default). Motion also sends one at once.
+   - **Language of the names**: the language of the feature names (French by default), given when
+     a camera is added.
+3. Save, then open the **Discovery** tab: one device per motionEye camera. Add the ones you want.
+4. The **Check the connection** button of the Configuration tab lists the cameras motionEye has,
+   whether they answer and whether motion detection is on.
 
-## Actions
+## The Gladys devices
 
-- **Test the weather provider** — performs a live request to Open-Meteo and
-  shows the current temperature and humidity under the button.
-- **Identify a device** — pick one of your devices in the list and it will
-  signal itself (the demo light "blinks" in the logs).
+Each motionEye camera becomes a Gladys camera named as in motionEye, with:
+
+| Feature          | What it is                                                                                                             |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Image            | The camera image, for the camera box of the dashboard and the "Send a camera image" scene action.                      |
+| Motion           | Motion seen right now by motionEye (detected / nothing), when motion detection is on.                                  |
+| Motion detection | Switch: motion detection of the camera in motionEye.                                                                   |
+| Still images     | Switch: the still images of the camera in motionEye (taken in the mode chosen in motionEye: on motion, at intervals…). |
+| Movie recording  | Switch: the movies of the camera in motionEye (recorded in the mode chosen in motionEye: on motion, continuous…).      |
+
+The switches follow the motionEye page: a change made there reaches Gladys within a minute. A
+camera that stops answering shows as unreachable on its device card.
+
+**Changing a switch restarts the motionEye cameras for a few seconds** (motionEye restarts its
+`motion` process after every change of settings): the images pause during that time.
+
+## Dashboard widget
+
+**motionEye camera** (widget settings: the camera) shows the image with its time, whether motion
+is seen, whether motion detection and movie recording are on, and two buttons: one turns motion
+detection on or off, the other makes motionEye save a picture and brings back the new view.
 
 ## Scenes
 
-The integration adds its own cards to the scene editor (Gladys 5.1 or
-later), under the **Integrations** category:
+### Triggers
 
-- **Motion detected** (trigger) — starts the scene when a demo motion sensor
-  sees something move. Optionally pick the sensor and what moved (person,
-  animal); left empty, any detection matches. The following actions can
-  read what moved with `{{triggerEvent.data.target}}`.
-- **Identify a device** (action) — makes the chosen device signal itself.
-  It returns whether the device could signal itself, so the following
-  actions can depend on it.
+- **motionEye: motion detected**: a camera starts seeing motion (motion detection on in
+  motionEye). Choose a camera, or leave empty for every camera. Its image is sent to Gladys at
+  once: a "Send a camera image" action right after it sends the moment of the detection. The camera
+  name is passed on to the actions.
+- **motionEye: camera offline**: a camera stops answering (motionEye has no image from it any
+  more, or motionEye itself is down), after three failed readings in a row. Same camera choice.
 
-## Dashboard
+### Actions
 
-Add the **Demo status** widget to a dashboard: it shows the live
-temperature of the weather station and the power of the office plug, the
-connection the plug currently uses (orange when degraded) and the observed
-location. Its **Identify the light** button makes the demo light signal
-itself.
+- **motionEye: motion detection**: turns motion detection on or off, for one camera, or for every
+  camera at once when the camera is left empty (one single restart of motionEye). Returns the
+  number of cameras changed.
+- **motionEye: take a picture**: motionEye saves a picture with its media files, and Gladys gets
+  the new image (for "Send a camera image").
+- **motionEye: read a camera**: reads a camera now. Returns whether it answers (online), sees
+  motion, and whether motion detection, still images and movie recording are on, for a condition
+  of the next steps.
+
+### Scene ideas
+
+- **Alarm armed**: when the house alarm is armed, "motionEye: motion detection" On, for every
+  camera; Off when it is disarmed.
+- **Motion at the entrance**: trigger "motionEye: motion detected" on the entrance camera, then
+  "Send a camera image" of that camera to your phone.
+- **Camera lost**: trigger "motionEye: camera offline", then a message "{camera name} no longer
+  answers".
 
 ## Troubleshooting
 
-The integration logs everything it does: check the integration logs from the
-Gladys UI (or `docker logs` on the host) with `LOG_LEVEL=debug` for the full
-detail.
+- **"motionEye refuses the user name or password"**: enter the administrator account (the one
+  that opens the motionEye settings), not the surveillance user.
+- **"motionEye does not answer at this address"**: open the address in a browser from the Gladys
+  network; check the port (8765 by default) and that motionEye listens on the network, not only on
+  `localhost`.
+- **A camera is unreachable**: motionEye has no image from it either; check it in the motionEye
+  page.
+- **"Motion" never moves**: motion detection must be on (switch **Motion detection**), and
+  motionEye must detect the motion itself (threshold, mask… in its settings).
+- **Logs**: the integration logs only its life (start, server or camera lost and back, actions);
+  set `LOG_LEVEL=debug` on the integration to see every reading.
+
+## Limits
+
+- Motion is read every few seconds (the **Motion check** setting): a motion shorter than that, and
+  shorter than the motionEye event, may be missed. motionEye cannot notify Gladys directly: its
+  web hooks would need a port of the integration open on the network.
+- One motionEye server per integration (others as remote cameras, see above).
+- "Simple MJPEG" cameras of motionEye are left out: motionEye only relays their stream, with no
+  motion detection or settings.
+- The image of Gladys is not a live stream: it refreshes at the chosen pace, and at once on motion.
+- The pictures and movies stay in motionEye; Gladys only shows the last image.

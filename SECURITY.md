@@ -30,6 +30,15 @@ Gladys before reporting a problem.
 
 In scope: the code of this repository and the Docker image it publishes.
 
+The integration stores nothing under `/data`. The motionEye password is kept
+by Gladys in the integration configuration; the container holds it in memory
+only, and never writes it in a log line or a message. With motionEye 0.43 or
+older it never travels either: each request is signed with its SHA-1. With
+motionEye 0.44 or later it is sent once to `POST /login`, in clear text over
+plain HTTP: put motionEye behind HTTPS if the network between Gladys and
+motionEye is not trusted. The integration only talks to the motionEye address
+of the configuration, on the local network, and opens no port.
+
 Out of scope: Gladys Assistant itself (see its
 [security policy](https://github.com/GladysAssistant/Gladys/security/policy)),
-and the third-party services and devices the integration talks to.
+and motionEye, motion and the cameras the integration talks to.

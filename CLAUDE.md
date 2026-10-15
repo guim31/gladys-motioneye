@@ -16,8 +16,8 @@ its only runtime dependency. It started from the official JavaScript template.
 ```bash
 npm install
 npm test                                  # node --test, the built-in runner
-node --test test/devices.test.js          # one file
-node --test --test-name-pattern "plug"    # tests whose name matches
+node --test test/hub.test.js              # one file
+node --test --test-name-pattern "motion"  # tests whose name matches
 npm run lint                              # ESLint
 npm run format:check                      # Prettier, as the CI runs it
 npm run format                            # Prettier, fix in place
@@ -32,15 +32,19 @@ pushing.
 
 ```
 index.js                          SDK wiring only: handlers registered before connect()
-src/devices/index.js              registry of the device blueprints + dispatch helpers
-src/devices/<type>.js             one device type per file (buildDevice, onPoll, onSetValue...)
+src/app.js                        every SDK handler, on the real SDK or the tests' fake Gladys
+src/hub.js                        the server, its cameras, timers, states, images, triggers
+src/devices.js                    one Gladys device per motionEye camera (features, names)
+src/motioneye/client.js           HTTP client: session login (0.44+) or signed requests
+src/motioneye/signature.js        the request signature of motionEye ≤ 0.43
 src/scenes.js                     scene action handlers (manifest `scene_actions`)
 src/widgets.js                    dashboard widget handlers (manifest `widgets`)
+src/texts.js                      connection status and "Check the connection" report
 src/config.js                     DEFAULT_CONFIG (mirrors the manifest defaults) + normalization
-src/weather.js                    example driver (Open-Meteo)
 gladys-assistant-integration.json manifest: name, config_schema, actions, image...
-docs/en.md, docs/fr.md            user documentation, re-hosted by Gladys (mandatory)
-test/                             node --test, against the SDK's fake Gladys (integration-sdk/testing)
+docs/{en,fr,de,es}.md             user documentation, re-hosted by Gladys (mandatory)
+test/                             node --test, against the SDK's fake Gladys and a fake motionEye
+test/helpers/fakeMotionEye.js     simulated motionEye 0.42 / 0.45 behind the `fetch` seam
 .github/scripts/release.mjs       release helpers (manifest bump, changelog), tested in test/
 ```
 
@@ -70,8 +74,9 @@ test/                             node --test, against the SDK's fake Gladys (in
   `type: "provider"`: 5.1.0). `test/manifest.test.js` ties the manifest to the
   code (defaults, action, scene and widget handlers): change both sides
   together.
-- **User-facing text** is bilingual (English and French): action messages,
-  manifest texts, and `docs/en.md` / `docs/fr.md`, kept in sync.
+- **User-facing text** exists in English, French, German and Spanish: action
+  messages, manifest texts, feature names, widget texts, and
+  `docs/{en,fr,de,es}.md`, kept in sync (`test/i18n.test.js`).
 - **Style.** Prettier formats, ESLint catches mistakes. Comments explain why,
   in English. Tests never touch the network.
 
@@ -233,3 +238,31 @@ long, et sur un « Sie »/« Ihr… » de politesse en allemand. Le store exige 
 - Docs `en`, `fr`, `de`, `es` avec les mêmes sections.
 - Chauffe, ouverture, sécurité : ne rien rendre pilotable « comme un thermostat » ou par un assistant
   vocal quand une erreur serait dangereuse (leçon d'OctoPrint).
+
+## motionEye : API et pièges (15/10/2026)
+
+- **Deux authentifications.** motionEye 0.44+ (session) : `POST /login` en formulaire
+  (`username`, `password`), cookie signé Tornado `user="2|1:0|…"` **guillemets compris**, à renvoyer
+  tel quel ; 401 si refus, session admin de 24 h, 403 ensuite (on se reconnecte une fois). motionEye
+  ≤ 0.43 : `POST /login` répond **200 avec la page de connexion** (0.42.1) ou 400, jamais de cookie
+  `user` → requêtes signées (`_username`, `_signature`), 403 si refus. La 0.44 **n'accepte plus** la
+  signature (seulement session ou HMAC entre serveurs motionEye) : il faut les deux chemins.
+- **Mouvement** : pas d'API d'état ; `GET /picture/<id>/current/` pose le cookie
+  `motion_detected_<id>=true|false` (ce que lit la page motionEye). Sans image (caméra perdue),
+  motionEye attend jusqu'à 5 s puis répond 200 **corps vide**. Une caméra « MJPEG simple » répond 400 :
+  elle est écartée. `width=` fait réduire l'image par motionEye (jamais agrandie).
+- **Réglages** : `/config/<id>/set` veut le **formulaire complet** (KeyError sinon) ; `/config/0/set`
+  prend `{ "<id>": formulaire, … }` et ne redémarre `motion` qu'**une fois** ; chaque écriture redémarre
+  les caméras ~3 s (`offlineAfter: 3` lectures avant « hors ligne »). Les erreurs peuvent arriver dans
+  un 200 `{ "error": "…" }`. `record_start`/`record_stop` sont des no-op côté motionEye : non utilisés.
+- **Utilisateur de surveillance** : la 0.44 l'accepte au login et liste les caméras **sans**
+  `motion_detection`/`still_images`/`movies` (`_NON_ADMIN_CAMERA_FIELDS`) : traité comme un refus de
+  compte, sinon tous les interrupteurs paraîtraient éteints.
+- **Les webhooks motionEye ne sont pas utilisables** : le conteneur n'a pas de port joignable
+  depuis le réseau (les ports exposés sont ceux des sous-conteneurs). D'où la lecture périodique.
+- **Tests Docker** (`sg docker`, ressources `gladys-test-motioneye*`) : `ghcr.io/motioneye-project/motioneye:edge`
+  (0.45.0a1) et `ccrisan/motioneye:master-amd64` (0.42.1) ; caméra réseau = conteneur de la même image
+  lancé en `ffmpeg -re -f lavfi -i testsrc2 … -f mpjpeg -listen 1 http://0.0.0.0:8081/cam.mjpg`
+  (**un seul client par flux** : un flux par serveur). Le `motion` 4.2.2 de l'image 0.42 ne lit pas
+  ce flux (watchdog), la 0.45 oui ; `testsrc2` donne un mouvement permanent. Mot de passe admin :
+  `# @admin_password …` dans `/etc/motioneye/motion.conf`, puis redémarrage.
