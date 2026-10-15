@@ -18,7 +18,7 @@ export const DEFAULT_CONFIG = {
   language: 'en',
 };
 
-export const FAST = { minImageSpacingMs: 0, offlineAfter: 2 };
+export const FAST = { minImageSpacingMs: 0, offlineAfter: 2, offlineAfterMs: 0, restartGraceMs: 0 };
 
 /**
  * @param {object} [options]

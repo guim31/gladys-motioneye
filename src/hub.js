@@ -43,9 +43,14 @@ export const FIT_WIDTHS = [1280, 960, 640, 480];
 
 export const DEFAULT_TIMINGS = {
   settingsMs: 60 * 1000,
-  // Consecutive failed reads before a camera is said offline: motion
-  // restarts for a few seconds after every change of settings.
+  // A camera is said offline after this many failed reads in a row AND this
+  // long without a frame: motion restarts for seconds after every change of
+  // settings (5 to 10 s seen on motionEye 0.45), whatever the read interval.
   offlineAfter: 3,
+  offlineAfterMs: 20 * 1000,
+  // After a change of settings written by the integration, failures are not
+  // counted this long: the restart it caused is not an outage.
+  restartGraceMs: 30 * 1000,
   // 12 images a minute per camera at most (the core's bound).
   minImageSpacingMs: 5000,
   heartbeatMs: 12 * 60 * 60 * 1000,
@@ -53,6 +58,9 @@ export const DEFAULT_TIMINGS = {
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// How old the last image may be to stand in for a fresh one.
+const STALE_IMAGE_MS = 5 * 60 * 1000;
 
 export const toDataUri = (jpeg) => `${IMAGE_PREFIX}${jpeg.toString('base64')}`;
 
@@ -124,7 +132,17 @@ export class MotionEyeHub {
       return;
     }
     this.clientKey = key;
+    this.generation = (this.generation ?? 0) + 1;
     this.cameras.clear();
+    // The cameras already added in Gladys, known before motionEye answers:
+    // they can be said unreachable when it never does.
+    for (const device of this.gladys.devices ?? []) {
+      const param = (device.params ?? []).find((item) => item.name === 'MOTIONEYE_CAMERA_ID');
+      const id = Number(param?.value);
+      if (Number.isInteger(id)) {
+        this.cameras.set(id, { ...this.newCamera(id), name: String(device.name ?? '') });
+      }
+    }
     this.server = null;
     this.publishedDevicesKey = null;
     this.client = config.validUrl
@@ -182,15 +200,26 @@ export class MotionEyeHub {
 
   /** Read the camera list and settings; publish what changed. */
   refresh() {
-    if (!this.refreshing) {
-      this.refreshing = this.doRefresh().finally(() => {
-        this.refreshing = null;
-      });
+    // A refresh started before a change of configuration speaks of the old
+    // server: chain a new one rather than share its result.
+    if (!this.refreshing || this.refreshing.generation !== this.generation) {
+      const previous = this.refreshing ?? Promise.resolve();
+      const generation = this.generation;
+      const run = previous
+        .catch(() => {})
+        .then(() => this.doRefresh(generation))
+        .finally(() => {
+          if (this.refreshing === run) {
+            this.refreshing = null;
+          }
+        });
+      run.generation = generation;
+      this.refreshing = run;
     }
     return this.refreshing;
   }
 
-  async doRefresh() {
+  async doRefresh(generation = this.generation) {
     if (!this.client) {
       await this.setServer('noUrl');
       return;
@@ -199,7 +228,22 @@ export class MotionEyeHub {
     try {
       list = await this.client.listCameras();
     } catch (err) {
-      await this.serverFailed(err);
+      if (generation === this.generation) {
+        await this.serverFailed(err);
+      }
+      return;
+    }
+    if (generation !== this.generation) {
+      return;
+    }
+    // The surveillance user gets the cameras without their settings: its
+    // switches would all read "off", and every write would be refused.
+    if (list.some((settings) => settings.proto !== 'mjpeg' && !('motion_detection' in settings))) {
+      await this.serverFailed(
+        new MotionEyeError(`${this.client.label}: the account is not an administrator`, {
+          kind: 'auth',
+        }),
+      );
       return;
     }
     this.skipped = 0;
@@ -235,6 +279,7 @@ export class MotionEyeHub {
       settings: {},
       online: null,
       failures: 0,
+      lastSeenAt: Date.now(),
       motion: null,
       image: null,
       imageSeq: 0,
@@ -248,6 +293,9 @@ export class MotionEyeHub {
     camera.enabled = settings.enabled !== false;
     for (const key of Object.values(SWITCHES)) {
       camera.settings[key] = settings[key] === true;
+    }
+    if (!this.detecting(camera) && camera.motion) {
+      camera.motion = false;
     }
     if (!camera.enabled && camera.online !== false) {
       // Turned off in motionEye: no frame to read, no "offline" alarm either.
@@ -281,6 +329,15 @@ export class MotionEyeHub {
     if (state === previous) {
       return;
     }
+    if (state === 'auth' || state === 'noUrl') {
+      // Nothing can be read any more: no stale motion, no "local" badge.
+      for (const camera of this.cameras.values()) {
+        camera.online = false;
+        camera.motion = camera.motion === null ? null : false;
+        await this.publishStates(camera);
+      }
+      await this.publishTransports();
+    }
     try {
       if (state === 'ok') {
         await this.gladys.setConnectionStatus(true);
@@ -308,8 +365,20 @@ export class MotionEyeHub {
     if (key === this.publishedDevicesKey) {
       return;
     }
-    await this.gladys.publishDiscoveredDevices(devices);
-    this.publishedDevicesKey = key;
+    try {
+      await this.gladys.publishDiscoveredDevices(devices);
+      this.publishedDevicesKey = key;
+      if (this.devicesFailing) {
+        this.devicesFailing = false;
+        logger.info('The cameras are published to Gladys again');
+      }
+    } catch (err) {
+      // Tried again at the next reading of the list.
+      if (!this.devicesFailing) {
+        this.devicesFailing = true;
+        logger.warn(`Cannot publish the cameras to Gladys: ${err.message}`);
+      }
+    }
   }
 
   createdDevice(camera) {
@@ -343,10 +412,12 @@ export class MotionEyeHub {
 
   statesOf(camera) {
     const ids = this.ids(camera);
-    const states = Object.entries(SWITCHES).map(([feature, key]) => ({
-      device_feature_external_id: ids.feature(feature),
-      state: camera.settings[key] ? 1 : 0,
-    }));
+    const states = Object.entries(SWITCHES)
+      .filter(([, key]) => camera.settings[key] !== undefined)
+      .map(([feature, key]) => ({
+        device_feature_external_id: ids.feature(feature),
+        state: camera.settings[key] ? 1 : 0,
+      }));
     if (camera.motion !== null) {
       states.push({
         device_feature_external_id: ids.feature(FEATURE_KEYS.MOTION),
@@ -470,35 +541,50 @@ export class MotionEyeHub {
       return;
     }
     await this.reachable(camera);
-    if (this.server !== 'ok') {
+    if (this.server === 'unreachable') {
       // The server answers again: its camera list may have changed.
       this.track(this.refresh());
     }
     camera.image = { jpeg: picture.jpeg, at: Date.now() };
     camera.imageSeq += 1;
-    const rising = picture.motion === true && camera.motion === false;
-    if (picture.motion !== null && picture.motion !== camera.motion) {
-      camera.motion = picture.motion;
+    // With detection off there is no motion, whatever a flag motionEye kept
+    // from before its restart says.
+    const motion = picture.motion === null ? null : picture.motion && this.detecting(camera);
+    const rising = motion === true && camera.motion === false;
+    if (motion !== null && motion !== camera.motion) {
+      camera.motion = motion;
       await this.publishStates(camera);
       this.requestWidgetRefresh();
     }
     if (rising) {
+      // The image of the moment first: a "Send a camera image" right after
+      // the trigger sends it.
+      await this.publishImage(camera, { wait: true });
       this.track(
         this.gladys.publishSceneEvent(TRIGGERS.MOTION, {
           camera: this.ids(camera).device,
           camera_name: deviceName(camera, this.config.language),
         }),
       );
-    }
-    const due = Date.now() - camera.lastPublishAt >= this.config.snapshotSeconds * 1000;
-    if (rising || due) {
+    } else if (Date.now() - camera.lastPublishAt >= this.config.snapshotSeconds * 1000) {
       await this.publishImage(camera);
     }
   }
 
+  detecting(camera) {
+    return camera.settings.motion_detection === true;
+  }
+
   async failed(camera) {
+    if (Date.now() < (this.restartUntil ?? 0)) {
+      return;
+    }
     camera.failures += 1;
-    if (camera.failures < this.timings.offlineAfter || camera.online === false) {
+    if (
+      camera.failures < this.timings.offlineAfter ||
+      Date.now() - camera.lastSeenAt < this.timings.offlineAfterMs ||
+      camera.online === false
+    ) {
       return;
     }
     const wasOnline = camera.online === true;
@@ -522,6 +608,7 @@ export class MotionEyeHub {
 
   async reachable(camera) {
     camera.failures = 0;
+    camera.lastSeenAt = Date.now();
     if (camera.online === true) {
       return;
     }
@@ -543,9 +630,14 @@ export class MotionEyeHub {
     if (jpeg.length <= MAX_JPEG_BYTES) {
       return jpeg;
     }
-    for (const width of FIT_WIDTHS) {
+    // The width that fitted last time first: one request, not four.
+    const widths = camera.fitWidth
+      ? [camera.fitWidth, ...FIT_WIDTHS.filter((width) => width < camera.fitWidth)]
+      : FIT_WIDTHS;
+    for (const width of widths) {
       const smaller = await this.client.currentPicture(camera.id, { width });
       if (smaller.jpeg && smaller.jpeg.length <= MAX_JPEG_BYTES) {
+        camera.fitWidth = width;
         return smaller.jpeg;
       }
     }
@@ -579,13 +671,21 @@ export class MotionEyeHub {
   /** A fresh image for Gladys (dashboard, "show me the camera"): data URI. */
   async imageFor(externalId) {
     const camera = this.require(externalId);
-    const picture = await this.client.currentPicture(camera.id);
-    if (!picture.jpeg) {
+    let picture = null;
+    try {
+      picture = await this.client.currentPicture(camera.id);
+    } catch (err) {
+      logger.debug(`No fresh image of camera ${camera.id}: ${err.message}`);
+    }
+    if (picture?.jpeg) {
+      camera.image = { jpeg: picture.jpeg, at: Date.now() };
+      camera.imageSeq += 1;
+    } else if (!camera.image || Date.now() - camera.image.at > STALE_IMAGE_MS) {
       throw new Error(`Camera ${camera.id} has no image right now`);
     }
-    camera.image = { jpeg: picture.jpeg, at: Date.now() };
-    camera.imageSeq += 1;
-    return toDataUri(await this.fit(camera, picture.jpeg));
+    // motion restarting (a few seconds after a change of settings): the last
+    // image rather than none.
+    return toDataUri(await this.fit(camera, camera.image.jpeg));
   }
 
   // --- Commands ------------------------------------------------------------------
@@ -606,7 +706,10 @@ export class MotionEyeHub {
    */
   async setSwitches(cameras, key, on) {
     const changes = new Map(cameras.map((camera) => [camera.id, { [key]: on }]));
+    // motion restarts every camera of the server: not an outage.
+    this.restartUntil = Date.now() + this.timings.restartGraceMs;
     const written = await this.client.updateCameras(changes);
+    this.restartUntil = Date.now() + this.timings.restartGraceMs;
     for (const camera of cameras) {
       const settings = written.get(camera.id);
       if (settings) {

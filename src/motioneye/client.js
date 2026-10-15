@@ -222,6 +222,9 @@ export class MotionEyeClient {
         await this.login();
         return this.request(path, { method, params, json, timeoutMs, retried: true });
       }
+      // Decided again at the next request: the server may have been updated
+      // from signatures (≤ 0.43) to sessions (0.44+).
+      this.mode = null;
       throw new MotionEyeError(
         `${this.label} refuses the request ${method} ${path}: wrong account, or not an administrator`,
         { kind: 'auth', status: response.status },

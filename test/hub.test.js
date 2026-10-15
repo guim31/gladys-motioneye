@@ -242,3 +242,116 @@ test('the container reads the cameras on its own timer, without onPoll', async (
   await world.hub.idle();
   assert.equal(lastState(world, 1, 'motion'), 1);
 });
+
+test('the restart of motion caused by a switch is not an outage', async (t) => {
+  const world = await createWorld({ timings: { minImageSpacingMs: 0, offlineAfter: 2 } });
+  t.after(() => world.app.stop());
+  await createAll(world);
+  await world.fake.sceneAction('set_motion_detection', { state: 'off' });
+  // motion restarts: no frame for a while.
+  world.server.offline.add(1);
+  for (let round = 0; round < 5; round += 1) {
+    await world.hub.pollAll();
+  }
+  await world.hub.idle();
+  assert.deepEqual(world.fake.sceneEvents, []);
+  assert.equal(world.hub.cameras.get(1).online, true);
+});
+
+test('no motion while detection is off, whatever flag motionEye kept', async (t) => {
+  const world = await createWorld();
+  t.after(() => world.app.stop());
+  await createAll(world);
+  world.server.motion.set(1, true);
+  await world.hub.pollAll();
+  assert.equal(lastState(world, 1, 'motion'), 1);
+  await world.fake.sceneAction('set_motion_detection', { camera: idOf(world, 1), state: 'off' });
+  assert.equal(lastState(world, 1, 'motion'), 0);
+  await world.hub.pollAll();
+  assert.equal(lastState(world, 1, 'motion'), 0);
+});
+
+test('Gladys asks for an image while motion restarts: the last one', async (t) => {
+  const world = await createWorld();
+  t.after(() => world.app.stop());
+  await createAll(world);
+  world.server.offline.add(1);
+  const ack = await world.fake.getImage(world.fake.discoveredDevices[0]);
+  assert.equal(ack.success, true, ack.error);
+  world.hub.cameras.get(1).image.at -= 10 * 60 * 1000;
+  assert.equal((await world.fake.getImage(world.fake.discoveredDevices[0])).success, false);
+});
+
+test('a new password saved while the old account is still being read: the new one wins', async (t) => {
+  const world = await createWorld({ config: { ...DEFAULT_CONFIG, password: 'nope' } });
+  t.after(() => world.app.stop());
+  // The read with the old account hangs, then fails.
+  let fail;
+  world.hub.client.listCameras = () =>
+    new Promise((resolve, reject) => {
+      fail = () => reject(Object.assign(new Error('refused'), { kind: 'auth' }));
+    });
+  const hanging = world.hub.refresh();
+  await new Promise((resolve) => setImmediate(resolve));
+  world.hub.applyConfig({ ...world.hub.config, password: 'secret' });
+  const fresh = world.hub.refresh();
+  assert.notEqual(fresh, hanging);
+  fail();
+  await Promise.all([hanging, fresh]);
+  assert.equal(world.hub.server, 'ok');
+  assert.deepEqual(world.fake.connectionStatus, { connected: true });
+});
+
+test('a surveillance account is refused clearly, not shown as every switch off', async (t) => {
+  const server = new FakeMotionEye();
+  for (const camera of server.cameras.values()) {
+    delete camera.motion_detection;
+    delete camera.still_images;
+    delete camera.movies;
+  }
+  const world = await createWorld({ server });
+  t.after(() => world.app.stop());
+  assert.equal(world.fake.connectionStatus.connected, false);
+  assert.match(world.fake.connectionStatus.message.en, /administrator account/);
+});
+
+test('an account refused later: devices unreachable, motion back to 0', async (t) => {
+  const world = await createWorld();
+  t.after(() => world.app.stop());
+  await createAll(world);
+  world.server.motion.set(1, true);
+  await world.hub.pollAll();
+  world.server.password = 'changed';
+  world.server.sessions.clear();
+  await world.hub.refresh();
+  assert.equal(lastState(world, 1, 'motion'), 0);
+  const last = world.fake.transports.filter((e) => e.device_external_id === idOf(world, 1)).pop();
+  assert.equal(last.transport, 'unreachable');
+});
+
+test('motion right after a periodic image: the image still goes first', async (t) => {
+  const world = await createWorld({ timings: { minImageSpacingMs: 300, offlineAfter: 2 } });
+  t.after(() => world.app.stop());
+  await createAll(world);
+  const images = world.fake.cameraImages.length;
+  world.server.motion.set(1, true);
+  await world.hub.pollAll();
+  await world.hub.idle();
+  assert.equal(world.fake.cameraImages.length, images + 1);
+  assert.equal(world.fake.sceneEvents.length, 1);
+});
+
+test('Gladys refusing the devices does not stop the integration', async (t) => {
+  const world = await createWorld({ connect: false });
+  t.after(() => world.app.stop());
+  const publish = world.gladys.publishDiscoveredDevices.bind(world.gladys);
+  let refuse = true;
+  world.gladys.publishDiscoveredDevices = (devices) =>
+    refuse ? Promise.reject(new Error('HTTP 500')) : publish(devices);
+  await world.gladys.connect();
+  await world.app.ready;
+  assert.deepEqual(world.fake.connectionStatus, { connected: true });
+  refuse = false;
+  await world.hub.refresh();
+  assert.equal(world.fake.discoveredDevices.length, 2);
+});

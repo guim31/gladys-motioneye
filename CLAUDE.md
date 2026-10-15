@@ -255,6 +255,9 @@ long, et sur un « Sie »/« Ihr… » de politesse en allemand. Le store exige 
   prend `{ "<id>": formulaire, … }` et ne redémarre `motion` qu'**une fois** ; chaque écriture redémarre
   les caméras ~3 s (`offlineAfter: 3` lectures avant « hors ligne »). Les erreurs peuvent arriver dans
   un 200 `{ "error": "…" }`. `record_start`/`record_stop` sont des no-op côté motionEye : non utilisés.
+- **Utilisateur de surveillance** : la 0.44 l'accepte au login et liste les caméras **sans**
+  `motion_detection`/`still_images`/`movies` (`_NON_ADMIN_CAMERA_FIELDS`) : traité comme un refus de
+  compte, sinon tous les interrupteurs paraîtraient éteints.
 - **Les webhooks motionEye ne sont pas utilisables** : le conteneur n'a pas de port joignable
   depuis le réseau (les ports exposés sont ceux des sous-conteneurs). D'où la lecture périodique.
 - **Tests Docker** (`sg docker`, ressources `gladys-test-motioneye*`) : `ghcr.io/motioneye-project/motioneye:edge`
